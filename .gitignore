@@ -2,3 +2,4 @@
 nexus/*.zip
 /target-verify
 /target-alt
+*.exe

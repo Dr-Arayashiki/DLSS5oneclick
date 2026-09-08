@@ -11,7 +11,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-pub const REPO: &str = "faisalkindi/DLSS5oneclick";
+pub const REPO: &str = "Dr-Arayashiki/DLSS5oneclick";
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Clone, PartialEq, Eq)]

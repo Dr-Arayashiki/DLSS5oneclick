@@ -38,12 +38,14 @@ pub enum Engine {
     /// ReShade + RenoDX add-on (both game kinds; the default).
     #[default]
     ReShade,
-    /// Dagherbou's OptiScaler fork with the built-in Neural Rendering pass.
+    /// OptiScaler with DLSS Neural Rendering (PreSR / multipass fork).
     /// Games with native DLSS only (the pass reads the inputs the game hands to DLSS).
     Opti,
 }
 
-pub const OPTI_RELEASES: &str = "https://api.github.com/repos/Dagherbou/OptiScaler_DLSSNR/releases";
+/// Prefer the fork's releases; fall back when it has none yet.
+pub const OPTI_REPO_FALLBACK: &str = "wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass";
+const OPTI_ZIP_RE: &str = r#"[^"/]*OptiScaler[^"/]*\.zip"#;
 
 const STEP_OPTI: Step = Step {
     name: "OptiScaler + DLSS Neural Rendering",
@@ -71,7 +73,7 @@ impl Latest {
         Latest {
             reshade: resolve_reshade_setup(client).ok().map(|(v, _)| v),
             feeder: net::latest_tag(client, FEEDER_REPO).ok(),
-            opti: net::latest_tag(client, OPTI_REPO).ok(),
+            opti: resolve_opti_source(client).ok().map(|(_, tag)| tag),
             dlss: rhi_latest(client, "dlss-").ok().map(|(t, _)| t),
             dlssnr: rhi_latest(client, "dlssnr-").ok().map(|(t, _)| t),
         }
@@ -138,7 +140,8 @@ fn step_opti(
     // in August still ran August's build after every reinstall. The tag is
     // recorded in the manifest; a copy this tool placed is refreshed when
     // upstream moves on, and one it did not place is never touched.
-    let latest = net::latest_tag(client, OPTI_REPO).ok();
+    let (opti_repo, latest_tag) = resolve_opti_source(client)?;
+    let latest = Some(latest_tag.clone());
     if st.opti {
         // No manifest at all: somebody else put OptiScaler there. A manifest
         // without a "# tag" line is ours, from before the tag was recorded --
@@ -161,30 +164,13 @@ fn step_opti(
             (None, _) => progress(0, "OptiScaler version not recorded, refreshing"),
         }
     }
-    // Stable release only (releases/latest skips pre-releases); the API list
-    // and the releases page both put betas first.
-    let asset: String = match latest.clone() {
-        Some(tag) => net::github_asset_url_html(client, OPTI_REPO, &tag, r#"[^"]+\.zip"#)?,
-        None => match net::get_json_github(client, OPTI_RELEASES) {
-            Ok(releases) => releases
-                .as_array()
-                .and_then(|a| a.iter().find(|r| r["prerelease"] != Value::Bool(true)))
-                .and_then(|r| r.get("assets"))
-                .and_then(Value::as_array)
-                .and_then(|a| a.first())
-                .and_then(|a| a.get("browser_download_url"))
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .ok_or_else(|| anyhow!("OptiScaler_DLSSNR has no release asset"))?,
-            Err(_) => {
-                let tags = net::github_release_tags_html(client, OPTI_REPO, "v", 2)?;
-                let tag = tags
-                    .first()
-                    .ok_or_else(|| anyhow!("no OptiScaler_DLSSNR release found"))?;
-                net::github_asset_url_html(client, OPTI_REPO, tag, r#"[^"]+\.zip"#)?
-            }
-        },
-    };
+    if opti_repo != OPTI_REPO {
+        progress(
+            0,
+            &format!("OptiScaler: no release on {OPTI_REPO}, using {opti_repo}"),
+        );
+    }
+    let asset = net::github_asset_url_html(client, &opti_repo, &latest_tag, OPTI_ZIP_RE)?;
     let asset = asset.as_str();
     let zip_path = work.join("optiscaler-dlssnr.zip");
     net::download(client, asset, &zip_path, "OptiScaler DLSS-NR", progress)?;
@@ -229,6 +215,9 @@ fn step_opti(
             installed.push(out_rel);
             continue;
         }
+        if dest.is_file() {
+            let _ = crate::backup::stash(d, &out_rel);
+        }
         net::extract_member(&mut zip, &member, &dest)?;
         installed.push(out_rel);
     }
@@ -264,10 +253,7 @@ fn step_opti(
         }
         fs::write(&ini, cur)?;
     }
-    let header = latest
-        .as_deref()
-        .map(|t| format!("# tag {t}\n"))
-        .unwrap_or_default();
+    let header = format!("# tag {latest_tag}\n");
     fs::write(
         d.join(game::OPTI_MANIFEST),
         format!("{header}{}", installed.join("\n")),
@@ -276,7 +262,8 @@ fn step_opti(
     Ok(installed)
 }
 
-/// Remove an OptiScaler install recorded in the manifest.
+/// Remove an OptiScaler install recorded in the manifest, then put back any
+/// game files that were overwritten (from `original_files/`).
 fn uninstall_opti(d: &Path, removed: &mut Vec<String>) -> Result<()> {
     let manifest = d.join(game::OPTI_MANIFEST);
     let Ok(list) = fs::read_to_string(&manifest) else {
@@ -320,7 +307,30 @@ const UPSTREAM_DOWNLOAD: &str =
 pub const RHI_RELEASES: &str =
     "https://api.github.com/repos/RankFTW/rhi-repo/releases?per_page=100";
 pub const RHI_REPO: &str = "RankFTW/rhi-repo";
-pub const OPTI_REPO: &str = "Dagherbou/OptiScaler_DLSSNR";
+pub const OPTI_REPO: &str = "Dr-Arayashiki/OptiScaler-DLSSNR-PreSR-Multipass";
+
+/// Pick (repo, tag) for OptiScaler: own fork first, then wilsjo2 upstream.
+fn resolve_opti_source(client: &Client) -> Result<(String, String)> {
+    for repo in [OPTI_REPO, OPTI_REPO_FALLBACK] {
+        if let Ok(tag) = net::latest_tag(client, repo) {
+            return Ok((repo.to_owned(), tag));
+        }
+        if let Ok(tags) = net::github_release_tags_html(client, repo, "v", 2) {
+            // Prefer a non-preview/prerelease-looking tag when possible.
+            let stable = tags
+                .iter()
+                .find(|t| {
+                    let l = t.to_ascii_lowercase();
+                    !l.contains("preview") && !l.contains("beta") && !l.contains("alpha")
+                })
+                .or_else(|| tags.first());
+            if let Some(tag) = stable {
+                return Ok((repo.to_owned(), tag.clone()));
+            }
+        }
+    }
+    bail!("no OptiScaler-DLSSNR release found on {OPTI_REPO} or {OPTI_REPO_FALLBACK}")
+}
 
 #[derive(Clone, Copy)]
 pub struct Step {
@@ -541,35 +551,67 @@ pub fn set_ini_key(ini: &str, section: &str, key: &str, value: &str) -> Option<S
     changed.then_some(out)
 }
 
+/// Binary REFramework package (dinput8.dll + reframework_revision.txt).
+/// Same layout as the zip that works in the game folder — not the Source code archive.
 pub const REFRAMEWORK_ZIP: &str =
     "https://github.com/praydog/REFramework-nightly/releases/latest/download/REFramework.zip";
 
-/// praydog's monolithic nightly: one `dinput8.dll` that detects the RE Engine
-/// game at runtime (DMC5, RE2/3/4/7/8/9, MHRise, MHWilds, SF6, DD2, Pragmata...).
-/// Only the DLL is extracted, as its release notes insist.
+/// Download → unpack into the game folder → delete the zip.
+/// Always re-downloads on Install, even if `dinput8.dll` is already there.
 fn step_reframework(
     client: &Client,
     st: &GameStatus,
     work: &Path,
     progress: Progress,
 ) -> Result<Vec<String>> {
-    if st.reframework {
-        progress(100, "REFramework already present");
-        return Ok(vec![]);
-    }
     let d = st.game_dir();
+    let dll = d.join(game::REFRAMEWORK_DLL);
+    let marker = d.join(game::REFRAMEWORK_MARKER);
+    let rev_path = d.join("reframework_revision.txt");
+
+    if dll.is_file() {
+        let _ = crate::backup::stash(d, game::REFRAMEWORK_DLL);
+        progress(0, "REFramework present — re-downloading");
+    } else {
+        progress(0, "Downloading REFramework");
+    }
+
     let zip_path = work.join("REFramework.zip");
-    net::download(client, REFRAMEWORK_ZIP, &zip_path, "REFramework", progress)?;
-    let f = fs::File::open(&zip_path)?;
-    let mut zip = zip::ZipArchive::new(f).context("REFramework download is not a valid zip")?;
-    let member = zip
-        .file_names()
-        .find(|n| net::file_name(n).eq_ignore_ascii_case(game::REFRAMEWORK_DLL))
-        .map(str::to_owned)
-        .ok_or_else(|| anyhow!("REFramework.zip has no {}", game::REFRAMEWORK_DLL))?;
-    net::extract_member(&mut zip, &member, &d.join(game::REFRAMEWORK_DLL))?;
-    fs::write(d.join(game::REFRAMEWORK_MARKER), b"")?;
-    Ok(vec![game::REFRAMEWORK_DLL.to_owned()])
+    // latest/download is never cached by net::download; use fresh anyway.
+    net::download_fresh(client, REFRAMEWORK_ZIP, &zip_path, "REFramework", progress)?;
+
+    {
+        let f = fs::File::open(&zip_path)?;
+        let mut zip = zip::ZipArchive::new(f).context("REFramework download is not a valid zip")?;
+        let member = zip
+            .file_names()
+            .find(|n| net::file_name(n).eq_ignore_ascii_case(game::REFRAMEWORK_DLL))
+            .map(str::to_owned)
+            .ok_or_else(|| anyhow!("REFramework.zip has no {}", game::REFRAMEWORK_DLL))?;
+        net::extract_member(&mut zip, &member, &dll)?;
+        let rev_member = zip
+            .file_names()
+            .find(|n| net::file_name(n).eq_ignore_ascii_case("reframework_revision.txt"))
+            .map(str::to_owned);
+        if let Some(rev) = rev_member {
+            net::extract_member(&mut zip, &rev, &rev_path)?;
+        }
+    }
+    // Zip handle dropped — remove the downloaded archive from disk.
+    let _ = fs::remove_file(&zip_path);
+
+    let mark = fs::read_to_string(&rev_path)
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "nightly".to_owned());
+    fs::write(&marker, mark.as_bytes())?;
+
+    let mut out = vec![format!("{} ({mark})", game::REFRAMEWORK_DLL)];
+    if rev_path.is_file() {
+        out.push("reframework_revision.txt".into());
+    }
+    Ok(out)
 }
 
 fn step_renodx(
@@ -1440,6 +1482,8 @@ pub fn uninstall(exe: &Path) -> Result<Vec<String>> {
             );
         }
     }
+    // Put back game files we overwrote (libxess.dll, dinput8.dll, …).
+    crate::backup::restore_all(d, &mut removed)?;
     if include.is_dir() && fs::read_dir(&include)?.next().is_none() {
         fs::remove_dir(&include)?;
     }

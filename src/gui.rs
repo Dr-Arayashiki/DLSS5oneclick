@@ -716,7 +716,7 @@ const TILES_FEEDER: [Tile; 6] = [
 
 const TILE_OPTI: Tile = Tile {
     title: "OptiScaler + NR pass",
-    detail: "Dagherbou fork as dxgi.dll · Insert opens its overlay",
+    detail: "OptiScaler DLSSNR PreSR as dxgi.dll · Insert opens its overlay",
     ok: |s| s.opti,
     optional: false,
 };
@@ -1572,8 +1572,8 @@ fn about_page(ui: &mut egui::Ui) {
             "https://github.com/NIGos/dlss5-bridge",
         ),
         (
-            "Dagherbou — OptiScaler_DLSSNR",
-            "https://github.com/Dagherbou/OptiScaler_DLSSNR",
+            "Dr-Arayashiki — OptiScaler-DLSSNR-PreSR-Multipass",
+            "https://github.com/Dr-Arayashiki/OptiScaler-DLSSNR-PreSR-Multipass",
         ),
         (
             "praydog — REFramework",
@@ -1581,7 +1581,7 @@ fn about_page(ui: &mut egui::Ui) {
         ),
         (
             "Source, issues and releases",
-            "https://github.com/faisalkindi/DLSS5oneclick",
+            "https://github.com/Dr-Arayashiki/DLSS5oneclick",
         ),
     ] {
         ui.hyperlink_to(
@@ -2157,7 +2157,7 @@ impl eframe::App for App {
                         self.engine == Engine::Opti,
                         native,
                         "OptiScaler (built-in NR pass)",
-                        &["Dagherbou's fork, no ReShade. Also swaps upscalers.", "In game: Insert → enable Neural Rendering."],
+                        &["PreSR Multipass fork, no ReShade. Also swaps upscalers.", "In game: Insert → enable Neural Rendering."],
                         if native {
                             ""
                         } else {

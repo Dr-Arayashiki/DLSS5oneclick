@@ -232,6 +232,30 @@ pub fn download(
             let _ = fs::remove_file(&cached);
         }
     }
+    download_and_store(client, url, dest, label, progress)
+}
+
+/// Like `download`, but always hits the network (ignores a local cache hit).
+pub fn download_fresh(
+    client: &Client,
+    url: &str,
+    dest: &Path,
+    label: &str,
+    progress: Progress,
+) -> Result<()> {
+    if let Some(cached) = cache_path(url) {
+        let _ = fs::remove_file(&cached);
+    }
+    download_and_store(client, url, dest, label, progress)
+}
+
+fn download_and_store(
+    client: &Client,
+    url: &str,
+    dest: &Path,
+    label: &str,
+    progress: Progress,
+) -> Result<()> {
     with_retry(progress, label, || {
         download_once(client, url, dest, label, progress)
     })?;
