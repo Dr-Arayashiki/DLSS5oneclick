@@ -634,7 +634,7 @@ pub fn plan_with(st: &GameStatus, engine: Engine, with_renodx: bool, upstream: b
         // Only games with native DLSS: the NR pass reads the inputs the game
         // hands to DLSS. Callers gate on mode; return the plan regardless so
         // --check can show it.
-        let mut v = vec![STEP_OPTI, STEP_DLSSNR_ONLY];
+        let mut v = vec![STEP_OPTI];
         if with_renodx {
             v.push(STEP_RESHADE_VIA_OPTI);
             v.push(STEP_RENODX);
@@ -1816,7 +1816,6 @@ mod tests {
             [
                 "REFramework (RE Engine needs it before ReShade)",
                 "OptiScaler + DLSS Neural Rendering",
-                "DLSS 5 model (nvngx_dlssnr.dll)",
                 "ReShade loaded by OptiScaler (ReShade64.dll)",
                 "RenoDX HDR mod for this game",
                 "GPU preference"
@@ -2124,7 +2123,6 @@ RestoreComputeSignature=true
             names,
             [
                 "OptiScaler + DLSS Neural Rendering",
-                "DLSS 5 model (nvngx_dlssnr.dll)",
                 "GPU preference"
             ]
         );
