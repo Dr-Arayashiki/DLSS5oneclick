@@ -579,24 +579,22 @@ pub fn game_ships_dlss(game_dir: &Path) -> bool {
     if walk(game_dir, 4) {
         return true;
     }
-    // Unreal: exe in <Project>/Binaries/Win64, DLSS in
-    // <Project>/Plugins/NVIDIA/DLSS/Binaries/ThirdParty/Win64 (or Engine/Plugins/...).
-    let unreal_root = game_dir
-        .parent()
-        .filter(|b| {
-            b.file_name()
-                .is_some_and(|n| n.eq_ignore_ascii_case("binaries"))
-        })
-        .and_then(Path::parent);
-    match unreal_root {
-        Some(proj) => {
-            walk(&proj.join("Plugins"), 7)
-                || proj
-                    .parent()
-                    .is_some_and(|root| walk(&root.join("Engine").join("Plugins"), 7))
+    // Unreal / packaged layouts: DLSS often lives under Engine/Plugins or
+    // Plugins, above the exe folder — classic Binaries/Win64, or layouts like
+    // platform/steam (PBZ) where the old Binaries-only climb never ran.
+    let mut cur = game_dir;
+    for _ in 0..4 {
+        let Some(parent) = cur.parent() else {
+            break;
+        };
+        if walk(&parent.join("Engine").join("Plugins"), 7)
+            || walk(&parent.join("Plugins"), 7)
+        {
+            return true;
         }
-        None => false,
+        cur = parent;
     }
+    false
 }
 
 #[derive(Debug, Clone)]
@@ -1475,6 +1473,35 @@ mod tests {
         assert_eq!(inspect(&exe).unwrap().mode, Mode::Feeder);
         // Streamline runtime alone is a DLSS signal
         fs::write(d.join("sl.interposer.dll"), b"x").unwrap();
+        assert_eq!(inspect(&exe).unwrap().mode, Mode::Native);
+    }
+
+    /// PBZ-style: exe under platform/steam, real DLSS under Engine/Plugins/...
+    /// (not Binaries/Win64). Marker next to the exe must not hide the engine copy.
+    #[test]
+    fn native_mode_unreal_platform_steam_layout() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("PBZ");
+        let steam = root.join("platform").join("steam");
+        fs::create_dir_all(&steam).unwrap();
+        let exe = make_pe(&steam.join("PBZ.exe"), PE_X64);
+        fs::write(steam.join(DLSS_DLL), b"ours").unwrap();
+        fs::write(steam.join(DLSS_MARKER), b"").unwrap();
+        assert_eq!(inspect(&exe).unwrap().mode, Mode::Feeder);
+        let win64 = root
+            .join("Engine")
+            .join("Plugins")
+            .join("Runtime")
+            .join("Nvidia")
+            .join("DLSS")
+            .join("Binaries")
+            .join("ThirdParty")
+            .join("Win64");
+        fs::create_dir_all(&win64).unwrap();
+        fs::write(win64.join(DLSS_DLL), b"game").unwrap();
+        assert_eq!(inspect(&exe).unwrap().mode, Mode::Native);
+        fs::remove_file(win64.join(DLSS_DLL)).unwrap();
+        fs::write(win64.join("nvngx_dlssg.dll"), b"fg").unwrap();
         assert_eq!(inspect(&exe).unwrap().mode, Mode::Native);
     }
 
