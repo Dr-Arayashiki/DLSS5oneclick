@@ -307,6 +307,9 @@ const UPSTREAM_DOWNLOAD: &str =
 pub const RHI_RELEASES: &str =
     "https://api.github.com/repos/RankFTW/rhi-repo/releases?per_page=100";
 pub const RHI_REPO: &str = "RankFTW/rhi-repo";
+pub const FOVEATED_REPO: &str = "Dr-Arayashiki/FoveatedDLSS5";
+pub const FOVEATED_RELEASES: &str =
+    "https://api.github.com/repos/Dr-Arayashiki/FoveatedDLSS5/releases?per_page=20";
 pub const OPTI_REPO: &str = "Dr-Arayashiki/OptiScaler-DLSSNR-PreSR-Multipass";
 
 /// Pick (repo, tag) for OptiScaler: own fork first, then wilsjo2 upstream.
@@ -714,12 +717,16 @@ pub fn pick_latest_asset(releases: &[Value], prefix: &str) -> Result<(String, St
             if !rest.chars().next()?.is_ascii_digit() {
                 return None; // "dlss-" must not match "dlssg-"
             }
-            let url = r
-                .get("assets")?
-                .as_array()?
-                .first()?
-                .get("browser_download_url")?
-                .as_str()?;
+            let assets = r.get("assets")?.as_array()?;
+            let asset = assets
+                .iter()
+                .find(|a| {
+                    a.get("name")
+                        .and_then(|n| n.as_str())
+                        .is_some_and(|n| n.ends_with(".zip"))
+                })
+                .or_else(|| assets.first())?;
+            let url = asset.get("browser_download_url")?.as_str()?;
             Some((ver_key(tag, prefix), tag.to_owned(), url.to_owned()))
         })
         .collect();
@@ -732,28 +739,37 @@ pub fn pick_latest_asset(releases: &[Value], prefix: &str) -> Result<(String, St
 /// Newest by version; for the DLSS 5 model prefer ShortFuse's multi-generation
 /// `.SF` builds over NVIDIA's RTX-50-only originals or single-generation ports.
 fn best_tag(mut cands: Vec<(Vec<u64>, String, String)>) -> (String, String) {
-    let any_sf = cands
-        .iter()
-        .any(|(_, t, _)| t.starts_with("dlssnr-") && t.contains(".SF"));
-    if any_sf {
-        cands.retain(|(_, t, _)| t.contains(".SF"));
+    let is_dlssnr = cands.iter().any(|(_, t, _)| t.starts_with("dlssnr-"));
+    if is_dlssnr {
+        let series = |v: &[u64]| (v.first().copied().unwrap_or(0), v.get(1).copied().unwrap_or(0));
+        let max_series = cands.iter().map(|(v, _, _)| series(v)).max();
+        if let Some(ms) = max_series {
+            cands.retain(|(v, _, _)| series(v) == ms);
+        }
+        let any_sf = cands.iter().any(|(_, t, _)| t.contains(".SF"));
+        if any_sf {
+            cands.retain(|(_, t, _)| t.contains(".SF"));
+        }
     }
     cands.sort();
     let (_, tag, url) = cands.pop().unwrap();
     (tag, url)
 }
 
-/// rhi-repo lookup that never needs the API: HTML releases pages for the tag,
-/// the expanded-assets fragment for the file.
-pub fn rhi_latest(client: &Client, prefix: &str) -> Result<(String, String)> {
-    if let Ok(releases) = net::get_json_github(client, RHI_RELEASES) {
+pub fn repo_latest(
+    client: &Client,
+    repo: &str,
+    api_url: &str,
+    prefix: &str,
+) -> Result<(String, String)> {
+    if let Ok(releases) = net::get_json_github(client, api_url) {
         if let Some(arr) = releases.as_array() {
             if let Ok(r) = pick_latest_asset(arr, prefix) {
                 return Ok(r);
             }
         }
     }
-    let tags = net::github_release_tags_html(client, RHI_REPO, prefix, 6)?;
+    let tags = net::github_release_tags_html(client, repo, prefix, 6)?;
     let cands: Vec<(Vec<u64>, String, String)> = tags
         .into_iter()
         .filter(|t| {
@@ -765,11 +781,21 @@ pub fn rhi_latest(client: &Client, prefix: &str) -> Result<(String, String)> {
         .map(|t| (ver_key(&t, prefix), t, String::new()))
         .collect();
     if cands.is_empty() {
-        bail!("no release with tag prefix '{prefix}' found on github.com/{RHI_REPO}/releases");
+        bail!("no release with tag prefix '{prefix}' found on github.com/{repo}/releases");
     }
     let (tag, _) = best_tag(cands);
-    let url = net::github_asset_url_html(client, RHI_REPO, &tag, r#"[^"]+\.zip"#)?;
+    let url = net::github_asset_url_html(client, repo, &tag, r#"[^"]+\.zip"#)?;
     Ok((tag, url))
+}
+
+/// Lookup latest release for rhi-repo / foveated repo
+pub fn rhi_latest(client: &Client, prefix: &str) -> Result<(String, String)> {
+    if prefix == "renodx-dlss5-" {
+        if let Ok(r) = repo_latest(client, FOVEATED_REPO, FOVEATED_RELEASES, prefix) {
+            return Ok(r);
+        }
+    }
+    repo_latest(client, RHI_REPO, RHI_RELEASES, prefix)
 }
 
 // ── step 1: ReShade ────────────────────────────────────────────────
@@ -1614,7 +1640,7 @@ mod tests {
 
     #[test]
     fn dlssnr_prefers_multi_generation_sf_build() {
-        let r: Vec<Value> = ["dlssnr-310.8.0", "dlssnr-310.8.0-RTX40", "dlssnr-310.8.SF", "dlssnr-310.8.SF-v2", "dlssnr-310.9.0"]
+        let r: Vec<Value> = ["dlssnr-310.8.0", "dlssnr-310.8.0-RTX40", "dlssnr-310.8.SF", "dlssnr-310.8.SF-v2"]
             .iter()
             .map(|t| json!({"tag_name": t, "assets": [{"browser_download_url": format!("https://x/{t}.zip")}]}))
             .collect();
@@ -1623,6 +1649,18 @@ mod tests {
             "dlssnr-310.8.SF-v2"
         );
         assert!(pick_latest_asset(&r, "renodx-dlss5-").is_err());
+    }
+
+    #[test]
+    fn dlssnr_prefers_newest_version_from_rhi() {
+        let r: Vec<Value> = ["dlssnr-310.8.0", "dlssnr-310.8.SF-v2", "dlssnr-310.9.16"]
+            .iter()
+            .map(|t| json!({"tag_name": t, "assets": [{"browser_download_url": format!("https://x/{t}.zip")}]}))
+            .collect();
+        assert_eq!(
+            pick_latest_asset(&r, "dlssnr-").unwrap().0,
+            "dlssnr-310.9.16"
+        );
     }
 
     #[test]
@@ -1638,6 +1676,22 @@ mod tests {
         );
         assert_eq!(pick_latest_asset(&r, "dlss-").unwrap().0, "dlss-310.8.0");
         assert!(pick_latest_asset(&r, "nothing-").is_err());
+    }
+
+    #[test]
+    fn rhi_latest_fetches_renodx_from_foveated_repo() {
+        let client = net::client().unwrap();
+        let (tag, url) = rhi_latest(&client, "renodx-dlss5-").unwrap();
+        assert_eq!(tag, "renodx-dlss5-10.9.2");
+        assert!(url.contains("renodx-dlss5-10.9.2.zip"));
+    }
+
+    #[test]
+    fn rhi_latest_fetches_dlssnr_310_9_from_rhi_repo() {
+        let client = net::client().unwrap();
+        let (tag, url) = rhi_latest(&client, "dlssnr-").unwrap();
+        assert_eq!(tag, "dlssnr-310.9.16");
+        assert!(url.contains("nvngx_dlssnr_310.9.16.zip"));
     }
 
     fn write_zip(path: &Path, entries: &[(&str, &[u8])], prefix: &[u8]) {
