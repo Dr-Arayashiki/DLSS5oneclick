@@ -1682,8 +1682,8 @@ mod tests {
     fn rhi_latest_fetches_renodx_from_foveated_repo() {
         let client = net::client().unwrap();
         let (tag, url) = rhi_latest(&client, "renodx-dlss5-").unwrap();
-        assert_eq!(tag, "renodx-dlss5-10.9.2");
-        assert!(url.contains("renodx-dlss5-10.9.2.zip"));
+        assert_eq!(tag, "renodx-dlss5-10.9.3");
+        assert!(url.contains("renodx-dlss5-10.9.3.zip"));
     }
 
     #[test]
